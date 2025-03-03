@@ -1,0 +1,182 @@
+import os
+import smtplib
+import configparser
+import time
+import re
+import random
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from colorama import init, Fore
+
+# Initialize colorama for terminal colors
+init(autoreset=True)
+
+# Load SMTP credentials from smtp_config.ini
+config = configparser.ConfigParser()
+config.read("smtp_config.ini")
+
+if "SMTP" in config:
+    SMTP_SERVER = config["SMTP"].get("SMTP_SERVER", "").strip()
+    SMTP_PORT = config["SMTP"].get("SMTP_PORT", "").strip()
+    SMTP_EMAIL = config["SMTP"].get("SMTP_EMAIL", "").strip()
+    SMTP_PASSWORD = config["SMTP"].get("SMTP_PASSWORD", "").strip()
+else:
+    SMTP_SERVER = SMTP_PORT = SMTP_EMAIL = SMTP_PASSWORD = ""
+
+# Ensure all credentials are present
+if not SMTP_SERVER or not SMTP_PORT or not SMTP_EMAIL or not SMTP_PASSWORD:
+    print(Fore.RED + "\n❌ ERROR: SMTP credentials are missing! Check your smtp_config.ini file.")
+    exit()
+
+def print_banner():
+    banner = """
+███████████████████████████████████████████████
+█░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░█
+█░░ TOMIDE SENDER - EMAIL AUTOMATION TOOL  ░░█
+█░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░█
+███████████████████████████████████████████████
+    """
+    print(Fore.GREEN + banner)
+
+def read_file(filename):
+    """ Read file and return a list of non-empty lines """
+    try:
+        with open(filename, "r", encoding="utf-8") as file:
+            return [line.strip() for line in file if line.strip()]
+    except FileNotFoundError:
+        print(Fore.RED + f"❌ Error: {filename} not found!")
+        return []
+
+def read_messages(filename):
+    """ Read messages and split by separator line, ensuring each message is read correctly """
+    try:
+        with open(filename, "r", encoding="utf-8") as file:
+            content = file.read().strip()
+        messages = content.split("===MESSAGE_SEPARATOR===")
+        return [msg.strip() for msg in messages if msg.strip()]
+    except FileNotFoundError:
+        print(Fore.RED + f"❌ Error: {filename} not found!")
+        return []
+
+def is_valid_email(email):
+    """ Check if an email has a valid format """
+    return re.match(r"[^@]+@[^@]+\.[^@]+", email) is not None
+
+def parse_leads():
+    """ Read and extract leads from leads.txt correctly """
+    leads = []
+    invalid_emails = []
+    
+    try:
+        data = read_file("leads.txt")
+        i = 0
+        while i < len(data):
+            if "===" in data[i]:  # Skip separator lines
+                i += 1
+                continue
+
+            if i + 3 < len(data):  # Ensure correct reading
+                manager_name = data[i].strip()
+                manager_email = data[i + 1].strip()
+                worker_name = data[i + 2].strip()
+                worker_position = data[i + 3].strip()
+
+                if "===" in manager_name or "===" in manager_email:
+                    i += 5  # Skip this block
+                    continue
+
+                if not is_valid_email(manager_email):
+                    invalid_emails.append(f"❌ Invalid email format: {manager_email} (Manager: {manager_name})")
+                    i += 5
+                    continue  
+
+                leads.append((manager_name, manager_email, worker_name, worker_position))
+                i += 5  # Move to the next entry
+            else:
+                break
+    except Exception as e:
+        print(Fore.RED + f"❌ Error reading leads.txt: {e}")
+    
+    return leads, invalid_emails
+
+def connect_smtp():
+    print_banner()
+    input(Fore.YELLOW + "Press Enter to connect to SMTP...")
+    print(Fore.BLUE + "Connecting to SMTP server...")
+    
+    try:
+        server = smtplib.SMTP_SSL(SMTP_SERVER, int(SMTP_PORT))
+        server.login(SMTP_EMAIL, SMTP_PASSWORD)
+        print(Fore.GREEN + "✅ SMTP Login Successful!")
+        return server
+    except smtplib.SMTPAuthenticationError:
+        print(Fore.RED + "❌ Authentication Error: Check your email & password!")
+    except smtplib.SMTPConnectError:
+        print(Fore.RED + "❌ Connection Error: Unable to connect to the server!")
+    except smtplib.SMTPException as e:
+        print(Fore.RED + f"❌ SMTP Error: {e}")
+    except Exception as e:
+        print(Fore.RED + f"❌ Unknown Error: {e}")
+    return None
+
+def send_emails():
+    server = connect_smtp()  # Connect first before processing leads
+    if not server:
+        return  # Stop execution if SMTP login fails
+
+    leads, invalid_emails = parse_leads()
+    subjects = read_file("subject.txt")
+    messages = read_messages("message.txt")  # Read messages using separator
+    
+    if not leads:
+        print(Fore.RED + "\n❌ Error: leads.txt is empty or not formatted correctly!")
+        return
+    if not subjects:
+        print(Fore.RED + "\n❌ Error: subject.txt is empty!")
+        return
+    if not messages:
+        print(Fore.RED + "\n❌ Error: message.txt is empty or incorrectly formatted!")
+        return
+    
+    print(Fore.YELLOW + "\nProcessing leads...")
+
+    success_count = 0
+    fail_count = 0
+
+    for manager_name, manager_email, worker_name, worker_position in leads:
+        subject = random.choice(subjects)  # Pick a random subject
+        message_template = random.choice(messages)  # Pick a random message
+        
+        message_content = message_template.replace("{{FirstName}}", manager_name)
+        message_content = message_content.replace("{{FullName}}", worker_name)
+        message_content = message_content.replace("{{Position}}", worker_position)
+        
+        msg = MIMEMultipart()
+        msg['From'] = f"{worker_name} <{SMTP_EMAIL}>"
+        msg['To'] = manager_email
+        msg['Subject'] = subject
+        msg.attach(MIMEText(message_content, 'plain'))
+        
+        try:
+            server.sendmail(SMTP_EMAIL, manager_email, msg.as_string())
+            print(Fore.BLUE + f"Sender: {worker_name}")
+            print(Fore.WHITE + f"Recipient: {manager_email}")
+            print(Fore.GREEN + f"✅ Sent successfully to {manager_email} (Manager: {manager_name})\n")
+            success_count += 1
+        except Exception as e:
+            print(Fore.RED + f"❌ Failed to send to {manager_email} (Manager: {manager_name}): {e}\n")
+            fail_count += 1
+        
+        time.sleep(2)  # 2-second delay per email
+
+    # Show invalid emails after processing all leads
+    if invalid_emails:
+        print(Fore.RED + "\n🚨 Invalid Emails Found:\n" + "\n".join(invalid_emails))
+
+    print(Fore.GREEN + f"\n✅ Total Successful Emails: {success_count}")
+    print(Fore.RED + f"❌ Total Failed Emails: {fail_count}")
+    input(Fore.YELLOW + "\nPress Enter to exit.")
+    server.quit()
+
+if __name__ == "__main__":
+    send_emails()
